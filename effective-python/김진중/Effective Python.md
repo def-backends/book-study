@@ -600,3 +600,755 @@ oldest, *others, youngest = car_ages_descending
 - 컴프리헨션은 간단한 사용처의 경우 가독성과 성능 모두를 얻을 수 있다.
 - 하지만 복잡한 상황에 컴프리헨션을 사용하는 경우 가독성이 매우 좋지 않아진다.
 - 따라서 하위 식이 세 개 이상인 경우 컴프리헨션을 사용하지 말라.
+
+## Better Way 29. 대입식을 사용해 컴프리헨션 안에서 반복 작업을 피하라
+### 요약
+- 대입식을 사용해 컴프리헨션이나 제너레이터 식의 조건 부분에서 사용한 값을 같은 컴프리헨션이나 제너레이터의 다른 위치에서 재사용할 수 있다.
+	- 이를 통해 가독성과 성능을 향상시킬 수 있다.
+- 조건이 아닌 부분에도 대입식을 사용할 수 있지만, 그런 형태의 사용은 피해야 한다.
+### [PEP-572](https://peps.python.org/pep-0572)
+책에서는 컴프리헨션 등을 주요 예시로 설명하지만, 실제 PEP 제안 문서를 보면 `if`-`elif`-`else` 문이 중첩되어 사용하는 것을 간소화하는 것에 중점을 두고 있다.
+#### Python 표준 라이브러리 예시
+##### [site.py](https://peps.python.org/pep-0572/#site-py)
+###### Before
+```python
+env_base = os.environ.get("PYTHONUSERBASE", None)
+if env_base:
+    return env_base
+```
+###### After
+```python
+if env_base := os.environ.get("PYTHONUSERBASE", None):
+    return env_base
+```
+##### [_pydecimal.py](https://peps.python.org/pep-0572/#pydecimal-py)
+
+###### Before
+```python
+if self._is_special:
+    ans = self._check_nans(context=context)
+    if ans:
+        return ans
+```
+###### After
+```python
+if self._is_special and (ans := self._check_nans(context=context)):
+    return ans
+```
+
+##### [copy.py](https://peps.python.org/pep-0572/#copy-py)
+###### Before
+```python
+reductor = dispatch_table.get(cls)
+if reductor:
+    rv = reductor(x)
+else:
+    reductor = getattr(x, "__reduce_ex__", None)
+    if reductor:
+        rv = reductor(4)
+    else:
+        reductor = getattr(x, "__reduce__", None)
+        if reductor:
+            rv = reductor()
+        else:
+            raise Error(
+                "un(deep)copyable object of type %s" % cls)
+```
+
+###### After
+```python
+if reductor := dispatch_table.get(cls):
+    rv = reductor(x)
+elif reductor := getattr(x, "__reduce_ex__", None):
+    rv = reductor(4)
+elif reductor := getattr(x, "__reduce__", None):
+    rv = reductor()
+else:
+    raise Error("un(deep)copyable object of type %s" % cls)
+```
+
+##### [datetime.py](https://peps.python.org/pep-0572/#datetime-py)
+###### Before
+```python
+s = _format_time(self._hour, self._minute,
+                 self._second, self._microsecond,
+                 timespec)
+tz = self._tzstr()
+if tz:
+    s += tz
+return s
+```
+###### After
+```python
+s = _format_time(self._hour, self._minute,
+                 self._second, self._microsecond,
+                 timespec)
+if tz := self._tzstr():
+    s += tz
+return s
+```
+
+##### [sysconfig.py](https://peps.python.org/pep-0572/#sysconfig-py)
+###### Before
+```python
+while True:
+    line = fp.readline()
+    if not line:
+        break
+    m = define_rx.match(line)
+    if m:
+        n, v = m.group(1, 2)
+        try:
+            v = int(v)
+        except ValueError:
+            pass
+        vars[n] = v
+    else:
+        m = undef_rx.match(line)
+        if m:
+            vars[m.group(1)] = 0
+```
+###### After
+```python
+while line := fp.readline():
+    if m := define_rx.match(line):
+        n, v = m.group(1, 2)
+        try:
+            v = int(v)
+        except ValueError:
+            pass
+        vars[n] = v
+    elif m := undef_rx.match(line):
+        vars[m.group(1)] = 0
+```
+
+##### 추가 예시
+###### Before
+```python
+diff = x - x_base
+if diff:
+    g = gcd(diff, n)
+    if g > 1:
+        return g
+```
+
+###### After
+```python
+if (diff := x - x_base) and (g := gcd(diff, n)) > 1:
+    return g
+```
+### 주의사항
+##### 대입식과 할당 문은 다르다
+###### 다중 변수는 직접적으로 지원되지 않는다
+```python
+x = y = z = 0  # Equivalent: (z := (y := (x := 0)))
+```
+###### 변수 외의 할당은 지원되지 않는다
+```python
+# No equivalent
+a[i] = x
+self.rest = []
+```
+###### 컴마 관련 우선순위 작동 방식이 다르다
+```python
+x = 1, 2  # Sets x to (1, 2)
+(x := 1, 2)  # Sets x to 1
+```
+###### `Iterable`  패킹/언패킹은 지원되지 않는다
+```python
+# Equivalent needs extra parentheses
+loc = x, y  # Use (loc := (x, y))
+info = name, phone, *rest  # Use (info := (name, phone, *rest))
+
+# No equivalent
+px, py, pz = position
+name, phone, email, *other_info = contact
+```
+###### 인라인 타입 어노테이션은 지원되지 않는다
+```python
+# Closest equivalent is "p: Optional[int]" as a separate declaration
+p: Optional[int] = None
+```
+###### `Augmented Assignment` (증강 할당문, `+=`)는 지원되지 않는다
+```python
+total += tax  # Equivalent: (total := total + tax)
+```
+
+## Better Way 32. 긴 리스트 컴프리헨션보다는 제너레이터 식을 사용하라
+### 요약
+- 입력이 크면 메모리를 너무 많이 사용하기 때문에 리스트 컴프리헨션은 문제를 일으킬 수 있다.
+- 제너레이터 식은 이터레이터처럼 한 번에 원소를 하나씩 출력하기 때문에 메모리 문제를 피할 수 있다.
+- 제너레이터 식이 반환한 이터레이터르 다른 제너레이터 식의 하위 식으로 사용함으로써 제너레이터 식을 서로 합성할 수 있다.
+- 서로 연결된 제너레이터 식은 매우 빠르게 실행되며 메모리도 효율적으로 사용한다.
+### [PEP-255](https://peps.python.org/pep-0255)
+#### [명세](https://peps.python.org/pep-0255/#specification-yield)
+`yield` 의 명세를 보면 다음과 같은 내용이 있다.
+
+> The `yield` statement may only be used inside functions. A function that contains a `yield` statement is called a generator function. A generator function is an ordinary function object in all respects, but has the new `CO_GENERATOR` flag set in the code object’s co_flags member.
+> `반환` 문은 함수 내에서만 사용할 수 있습니다. `반환` 문을 포함하는 함수를 제너레이터 함수라고 합니다. 제너레이터 함수는 모든 면에서 일반 함수 객체이지만 코드 객체의 co_flags 멤버에 새로운`CO_GENERATOR` 플래그가 설정되어 있습니다.
+> 
+> When a generator function is called, the actual arguments are bound to function-local formal argument names in the usual way, but no code in the body of the function is executed. Instead a generator-iterator object is returned; this conforms to the [iterator protocol](https://peps.python.org/pep-0234/ "PEP 234 – Iterators"), so in particular can be used in for-loops in a natural way. Note that when the intent is clear from context, the unqualified name “generator” may be used to refer either to a generator-function or a generator-iterator.
+> 제너레이터 함수가 호출되면 실제 인수는 일반적인 방식으로 함수 로컬 형식 인자 이름에 바인딩되지만 함수 본문에 있는 코드는 실행되지 않습니다. 대신 제너레이터-이터레이터 객체가 반환되며, 이는 [이터레이터 프로토콜을](https://peps.python.org/pep-0234/ "PEP 234 – Iterators") 준수하므로 특히 for-루프에서 자연스럽게 사용할 수 있습니다. 문맥에서 의도가 분명한 경우, 한정되지 않은 이름 "generator"를 사용하여 제너레이터 함수 또는 제너레이터 이터레이터를 지칭할 수 있습니다.
+>
+> Each time the `.next()` method of a generator-iterator is invoked, the code in the body of the generator-function is executed until a `yield` or `return` statement (see below) is encountered, or until the end of the body is reached.
+>제너레이터-이터레이터의 `.next()` 메서드가 호출될 때마다 `제너레이터-함수` 본문의 코드는`반환문` 또는`반환문` (아래 참조)이 발생하거나 본문의 끝에 도달할 때까지 실행됩니다.
+>
+I If a `yield` statement is encountered, the state of the function is frozen, and the value of _expression_list_ is returned to `.next()`’s caller. By “frozen” we mean that all local state is retained, including the current bindings of local variables, the instruction pointer, and the internal evaluation stack: enough information is saved so that the next time `.next()` is invoked, the function can proceed exactly as if the `yield` statement were just another external call.
+> **`yield` 문이 발생하면 함수 상태가 고정되고 `.next()`의 호출자에게 _expression_list_ 값이 반환됩니다.** "고정"이란 로컬 변수의 현재 바인딩, 명령 포인터, 내부 평가 스택을 포함한 모든 로컬 상태가 유지된다는 의미로, 다음에`.next()` 가 호출될 때 `함수가`마치 다른 외부 호출인 것처럼 정확하게 진행될 수 있도록 충분한 정보가 저장되어 있습니다.
+
+즉, `yield` 의 목적은 다음과 같다.
+1. **발생 시점의 함수 상태 고정**
+2. `for` 루프에서 편리하게 생성되는 값을 사용 가능
+
+왜 이런 기능이 필요한지는 [Motivation](https://peps.python.org/pep-0255/#motivation) 문단을 참고하면 찾아볼 수 있다. 이 문단에서는 **함수가 생성된 값 사이의 상태를 유지해야 하는 경우**에 대해 설명하고 있다. 특히 장점에 대해서는 다음과 같이 잘 요약하고 있다.
+
+>As in the thread approach, this allows both sides to be coded in the most natural ways; but unlike the thread approach, this can be done efficiently and on all platforms. Indeed, resuming a generator should be no more expensive than a function call.
+>스레드 접근 방식과 마찬가지로 양쪽을 가장 자연스러운 방식으로 코딩할 수 있지만, **스레드 접근 방식과 달리 모든 플랫폼에서 효율적으로 수행할 수 있습니다. 실제로 제너레이터를 다시 시작하는 데 함수 호출보다 더 많은 비용이 들지 않습니다.**
+
+## Better Way 30. 리스트를 반환하기보다는 제너레이터를 사용하라
+### 요약
+- 제너레이터를 사용하면 결과를 리스트에 합쳐서 반환하는 것보다 더 깔끔하다.
+- 제너레이터가 반환하는 이터레이터는 제너레이터 함수의 본문에서 `yield`가 반환하는 값들로 이뤄진 집합을 만들어낸다.
+- 제너레이터를 사용하면 작업 메모리에 모든 입력과 출력을 저장할 필요가 없으므로 입력이 아주 커도 출력 시퀀스를 만들 수 있다.
+
+## Better Way 31. 인자에 대해 이터레이션할 때는 방어적이 돼라
+### 요약
+- 입력 인자를 여러 번 이터레이션 하는 함수나 메서드를 조심하라. 입력받은 인자가 이터레이터면 함수가 이상하게 작동하거나 결과가 없을 수 있다.
+- 파이썬의 이터레이터 프로토콜은 컨테이너와 이터레이터가 `iter`, `next` 내장 함수나 `for` 루프 등의 관련 식과 상호작용하는 절차를 정의한다.
+- `__iter__` 메서드를 제너레이터로 정의하면 쉽게 이터러블 컨테이너 타입을 정의할 수 있다.
+- 어떤 값이 (컨테이너가 아닌) 이터레이터인지 감지하려면, 이 값을 `iter` 내장 함수에 넘겨서 반환되는 값이 원래 값과 같은지 확인하면 된다. 다른 방법으로 `collections.abc.Iterator` 클래스를 `isinstance` 함수와 함께 사용할 수도 있다.
+
+### 주의사항
+- 예시에서 제공하는 `방어적 복사` 예시는 항상 가능한 것은 아니다.
+	- 라이브러리, 프레임워크 등에서 다음에 `iterator` 를 새로 만드는 경우 이전의 `iterator` 와 다른 데이터가 반환되는 경우도 많다.
+		- **해당 코드의 문제로 볼 수 있지만, 불가피하게 의존이 필요한 경우에는 문제를 온전히 끊어낼 수는 없다.**
+		- 따라서 온전한 방어적 복사를 하기 위해서는 컬렉션 등에 `Iterable` 의 데이터를 담아서 처리해야 하는 경우도 있다.
+	- 제너레이터와 같은 "일회용 이터레이터"도 많기 때문에, 적절히 사용해야 한다.
+		- 제너레이터는 **"상태 유지"** 기능이 있기 때문.
+### 레퍼런스
+- https://stackoverflow.com/a/31245371
+
+## Better Way 33. `yield from`을 사용해 여러 제너레이터를 합성하라
+###  요약
+- `yield from` 식을 사용하면 여러 내장 제너레이터를 모아서 제너레이터 하나로 합성할 수 있다.
+- 직접 내포된 제너레이터를 이터레이션하면서 각 제너레이터의 출력을 내보내는 것보다 `yield from` 을 사용하는 것이 성능 면에서 더 좋다.
+### [PEP-380](https://peps.python.org/pep-0380/)
+실제로 `yield from` 이 해주는 기능은 생각보다 많다. 특히, [Formal Semantics](https://peps.python.org/pep-0380/#formal-semantics) 부분을 살펴보면 아예 간략한 정의가 있다.
+```python
+_i = iter(EXPR)
+try:
+    _y = next(_i)
+except StopIteration as _e:
+    _r = _e.value
+else:
+    while 1:
+        try:
+            _s = yield _y
+        except GeneratorExit as _e:
+            try:
+                _m = _i.close
+            except AttributeError:
+                pass
+            else:
+                _m()
+            raise _e
+        except BaseException as _e:
+            _x = sys.exc_info()
+            try:
+                _m = _i.throw
+            except AttributeError:
+                raise _e
+            else:
+                try:
+                    _y = _m(*_x)
+                except StopIteration as _e:
+                    _r = _e.value
+                    break
+        else:
+            try:
+                if _s is None:
+                    _y = next(_i)
+                else:
+                    _y = _i.send(_s)
+            except StopIteration as _e:
+                _r = _e.value
+                break
+RESULT = _r
+```
+
+기능은 해당 PEP 문서에도 잘 요약되어 있다.
+
+> - Any values that the iterator yields are passed directly to the caller.
+> - 반복자가 산출하는 모든 값은 호출자에게 직접 전달됩니다.
+> 
+> - Any values sent to the delegating generator using `send()` are passed directly to the iterator. If the sent value is None, the iterator’s `__next__()` method is called. If the sent value is not None, the iterator’s `send()` method is called. If the call raises StopIteration, the delegating generator is resumed. Any other exception is propagated to the delegating generator.
+> - `send()`를 사용하여 위임 생성기로 전송된 모든 값은 이터레이터에 직접 전달됩니다. 전송된 값이 `None`이면 이터레이터의 `__next__()` 메서드가 호출됩니다. 전송된 값이 `None`이 아닌 경우 이터레이터의 `send()` 메서드가 호출됩니다. 호출에서 `StopIteration`이 발생하면 위임 제너레이터가 재개됩니다. 다른 예외는 위임 제너레이터로 전파됩니다.
+> 
+> - Exceptions other than GeneratorExit thrown into the delegating generator are passed to the `throw()` method of the iterator. If the call raises StopIteration, the delegating generator is resumed. Any other exception is propagated to the delegating generator.
+> - 위임 제너레이터에 던져진 `GeneratorExit` 이외의 예외는 이터레이터의 `throw()` 메서드로 전달됩니다. 호출이 `StopIteration` 을 발생시키면 위임 제너레이터가 다시 시작됩니다. 다른 모든 예외는 위임 제너레이터로 전파됩니다.
+> 
+> - If a GeneratorExit exception is thrown into the delegating generator, or the `close()` method of the delegating generator is called, then the `close()` method of the iterator is called if it has one. If this call results in an exception, it is propagated to the delegating generator. Otherwise, GeneratorExit is raised in the delegating generator.
+> - 위임 제너레이터에 GeneratorExit 예외가 발생하거나 위임 제너레이터의 `close()` 메서드가 호출되면 이터레이터의 `close()` 메서드가 있는 경우 호출됩니다. 이 호출로 인해 예외가 발생하면 위임 제너레이터로 전파됩니다. 그렇지 않으면 위임 제너레이터에서 `GeneratorExit`가 발생합니다.
+> 
+> - The value of the `yield from` expression is the first argument to the `StopIteration` exception raised by the iterator when it terminates.
+> - `yield from` 표현식 값은 이터레이터가 종료될 때 발생하는 `StopIteration` 예외의 첫 번째 인자입니다.
+> 
+> - `return expr` in a generator causes `StopIteration(expr)` to be raised upon exit from the generator.
+> - 제너레이터에서 `expr` 을 반환하면 제너레이터가 종료될 때 `StopIteration(expr)` 이 발생하게 됩니다.
+
+즉, 단순히 제너레이터를 모아주는 것 외에도 예외 처리 등의 기능이 포함되어 있으므로 이를 사용하는 것이 바람직하다.
+
+
+## Better Way 34. `send`로 제너레이터에 데이터를 주입하지 말라
+### 요약
+- `send` 메서드를 사용해 데이터를 제너레이터에 주입할 수 있다. 제너레이터는 `send` 로 주입된 값을 `yield` 식이 반환하는 값을 통해 받으며, 이 값을 변수에 저장해 활용할 수 있다.
+- `send`와 `yield from` 식을 함께 사용하면 제너레이터의 출력에 `None`이 불쑥 타나타나는 의외의 결과를 얻을 수도 있다.
+- 합성할 제너레이터들의 입력으로 이터레이터를 전달하는 방식이 `send`를 사용하는 방식보다 더 낫다. `send`는 가급적 사용하지 말라.
+### [PEP-342](https://peps.python.org/pep-0342)
+**사실 `send` 메서드는 코루틴을 구현하기 위한 방법이다.** 이는 [Motivation](https://peps.python.org/pep-0342/#motivation) 항목을 보면 특히 자세히 설명된다. 해당 PEP 문서에 관련된 히스토리들이 자세하게 적혀있으므로 읽는 것을 추천한다.
+
+> Coroutines are a natural way of expressing many algorithms, such as simulations, games, asynchronous I/O, and other forms of event-driven programming or co-operative multitasking. Python’s generator functions are almost coroutines – but not quite – in that they allow pausing execution to produce a value, but do not provide for values or exceptions to be passed in when execution resumes. They also do not allow execution to be paused within the `try` portion of `try/finally` blocks, and therefore make it difficult for an aborted coroutine to clean up after itself.
+> 코루틴은 시뮬레이션, 게임, 비동기 입출력, 기타 형태의 이벤트 중심 프로그래밍 또는 협동 멀티태스킹 등 많은 알고리즘을 표현하는 자연스러운 방법입니다. 파이썬의 제너레이터 함수는 실행을 일시 중지하여 값을 생성할 수 있지만 실행이 재개될 때 전달할 값이나 예외를 제공하지 않는다는 점에서 거의 코루틴에 가깝지만 완전히 그런 것은 아닙니다. 또한 `try/finally` 블록의 `try` 부분 내에서 실행을 일시 중지할 수 없으므로 중단된 코루틴을 스스로 정리하기가 어렵습니다.
+
+> Also, generators cannot yield control while other functions are executing, unless those functions are themselves expressed as generators, and the outer generator is written to yield in response to values yielded by the inner generator. This complicates the implementation of even relatively simple use cases like asynchronous communications, because calling any functions either requires the generator to _block_ (i.e. be unable to yield control), or else a lot of boilerplate looping code must be added around every needed function call.
+> 또한 제너레이터는 다른 함수가 실행되는 동안에는 제어권을 양보할 수 없으며, 그 함수 자체가 제너레이터로 표현되고 외부 제너레이터가 내부 제너레이터가 산출한 값에 대한 응답으로 양보하도록 작성되지 않는 한, 다른 함수가 실행되는 동안에는 제어권을 양보할 수 없습니다. 이는 비동기 통신과 같이 비교적 간단한 사용 사례의 구현도 복잡하게 만드는데, 함수를 호출하려면 제너레이터가 _차단_ (즉, 제어권을 반환할 수 없음)되거나 필요한 함수 호출마다 많은 상용구 루핑 코드를 추가해야 하기 때문입니다.
+
+하지만 이와는 별개로, 현재의 python은 `asyncio`와 `Coroutine` 객체가 있으므로 예전의 이해하기도 사용하기도 어려운 방법을 고수할 필요는 없다.
+
+## Better Way 35. 제너레이터 안에서 `throw`로 상태를 변화시키지 말라
+### 요약
+- `throw` 메서드를 사용하면 제너레이터가 마지막으로 실행한 `yield` 식의 위치에서 예외를 다시 발생시킬 수 있다.
+- `throw`를 사용하면 가독성이 나빠진다. 예외를 잡아내고 다시 발생시키는 데 준비 코드가 필요하며 내포 단계가 깊어지기 때문이다.
+- 제너레이터에서 예외적인 동작을 제공하는 더 나은 방법은 `__iter__` 메서드를 구현하는 클래스를 사용하면서 예외적인 경우에 상태를 전이시키는 것이다.
+
+## Better Way 36. 이터레이터나 제너레이터를 다룰 때는 `itertools`를 사용하라
+### 요약
+- 이터레이터나 제너레이터를 다루는 `itertools` 함수는 세 가지 범주로 나눌 수 있다.
+	- 연결
+		- `chain` 
+		- `repeat`
+		- `cycle`
+		- `tee`
+		- `zip_longest`
+	- 필터
+		- `islice
+		- `takewhile`
+		- `dropwhile`
+		- `filterfalse`
+	- 조합
+		- `accumulate`
+		- `product
+		- `permutations`
+		- `combinations`
+		- `combinations_with_replacement`
+### 핵심 기능
+- `chain`, `cycle`
+	- 제너레이터 사용 시 빈번히 사용
+- `product`, `permutations`, `combinations`
+	- 알고리즘 문제를 풀 때 용이함
+### 요약 (참고: https://docs.python.org/ko/3/library/itertools.html)
+#### 무한 이터레이터
+| 이터레이터                                                                                                 | 인자              | 결과                                 | 예                                     |
+| ----------------------------------------------------------------------------------------------------- | --------------- | ---------------------------------- | ------------------------------------- |
+| [`count()`](https://docs.python.org/ko/3/library/itertools.html#itertools.count "itertools.count")    | [start[, step]] | start, start+step, start+2*step, … | `count(10) → 10 11 12 13 14 ...`      |
+| [`cycle()`](https://docs.python.org/ko/3/library/itertools.html#itertools.cycle "itertools.cycle")    | p               | p0, p1, … plast, p0, p1, …         | `cycle('ABCD') → A B C D A B C D ...` |
+| [`repeat()`](https://docs.python.org/ko/3/library/itertools.html#itertools.repeat "itertools.repeat") | elem [,n]       | elem, elem, elem, … 끝없이 또는 최대 n 번  | `repeat(10, 3) → 10 10 10`            |
+#### 가장 짧은 입력 시퀀스에서 종료되는 이터레이터
+|이터레이터|인자|결과|예|
+|---|---|---|---|
+|[`accumulate()`](https://docs.python.org/ko/3/library/itertools.html#itertools.accumulate "itertools.accumulate")|p [,func]|p0, p0+p1, p0+p1+p2, …|`accumulate([1,2,3,4,5]) → 1 3 6 10 15`|
+|[`batched()`](https://docs.python.org/ko/3/library/itertools.html#itertools.batched "itertools.batched")|p, n|(p0, p1, …, p_n-1), …|`batched('ABCDEFG', n=3) → ABC DEF G`|
+|[`chain()`](https://docs.python.org/ko/3/library/itertools.html#itertools.chain "itertools.chain")|p, q, …|p0, p1, … plast, q0, q1, …|`chain('ABC', 'DEF') → A B C D E F`|
+|[`chain.from_iterable()`](https://docs.python.org/ko/3/library/itertools.html#itertools.chain.from_iterable "itertools.chain.from_iterable")|iterable|p0, p1, … plast, q0, q1, …|`chain.from_iterable(['ABC', 'DEF']) → A B C D E F`|
+|[`compress()`](https://docs.python.org/ko/3/library/itertools.html#itertools.compress "itertools.compress")|data, selectors|(d[0] if s[0]), (d[1] if s[1]), …|`compress('ABCDEF', [1,0,1,0,1,1]) → A C E F`|
+|[`dropwhile()`](https://docs.python.org/ko/3/library/itertools.html#itertools.dropwhile "itertools.dropwhile")|predicate, seq|seq[n], seq[n+1], starting when predicate fails|`dropwhile(lambda x: x<5, [1,4,6,4,1]) → 6 4 1`|
+|[`filterfalse()`](https://docs.python.org/ko/3/library/itertools.html#itertools.filterfalse "itertools.filterfalse")|predicate, seq|elements of seq where predicate(elem) fails|`filterfalse(lambda x: x%2, range(10)) → 0 2 4 6 8`|
+|[`groupby()`](https://docs.python.org/ko/3/library/itertools.html#itertools.groupby "itertools.groupby")|iterable[, key]|key(v)의 값으로 그룹화된 서브 이터레이터들||
+|[`islice()`](https://docs.python.org/ko/3/library/itertools.html#itertools.islice "itertools.islice")|seq, [start,] stop [, step]|seq[start:stop:step]의 요소들|`islice('ABCDEFG', 2, None) → C D E F G`|
+|[`pairwise()`](https://docs.python.org/ko/3/library/itertools.html#itertools.pairwise "itertools.pairwise")|iterable|(p[0], p[1]), (p[1], p[2])|`pairwise('ABCDEFG') → AB BC CD DE EF FG`|
+|[`starmap()`](https://docs.python.org/ko/3/library/itertools.html#itertools.starmap "itertools.starmap")|func, seq|func(*seq[0]), func(*seq[1]), …|`starmap(pow, [(2,5), (3,2), (10,3)]) → 32 9 1000`|
+|[`takewhile()`](https://docs.python.org/ko/3/library/itertools.html#itertools.takewhile "itertools.takewhile")|predicate, seq|seq[0], seq[1], until predicate fails|`takewhile(lambda x: x<5, [1,4,6,4,1]) → 1 4`|
+|[`tee()`](https://docs.python.org/ko/3/library/itertools.html#itertools.tee "itertools.tee")|it, n|it1, it2, … itn 하나의 이터레이터를 n개의 이터레이터로 나눕니다||
+|[`zip_longest()`](https://docs.python.org/ko/3/library/itertools.html#itertools.zip_longest "itertools.zip_longest")|p, q, …|(p[0], q[0]), (p[1], q[1]), …|`zip_longest('ABCD', 'xy', fillvalue='-') → Ax By C- D-`|
+#### 조합형 이터레이터
+
+| 이터레이터                                                                                                                                                                      | 인자                 | 결과                                           |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | -------------------------------------------- |
+| [`product()`](https://docs.python.org/ko/3/library/itertools.html#itertools.product "itertools.product")                                                                   | p, q, … [repeat=1] | 데카르트 곱(cartesian product), 중첩된 for 루프와 동등합니다 |
+| [`permutations()`](https://docs.python.org/ko/3/library/itertools.html#itertools.permutations "itertools.permutations")                                                    | p[, r]             | r-길이 튜플들, 모든 가능한 순서, 반복되는 요소 없음              |
+| [`combinations()`](https://docs.python.org/ko/3/library/itertools.html#itertools.combinations "itertools.combinations")                                                    | p, r               | r-길이 튜플들, 정렬된 순서, 반복되는 요소 없음                 |
+| [`combinations_with_replacement()`](https://docs.python.org/ko/3/library/itertools.html#itertools.combinations_with_replacement "itertools.combinations_with_replacement") | p, r               | r-길이 튜플들, 정렬된 순서, 반복되는 요소 있음                 |
+
+## Better Way 37. 내장 타입을 여러 단계로 내포시키기보다는 클래스를 합성하라
+### 요약
+- 내장 타입에 의존하여 코드 작성 시 이해하거나 읽기 어려운 코드가 작성될 수 있다.
+- 내장 타입이 여러 단계로 내포되는 경우 관리가 어려워지므로, 내장 타입이 중첩되어 사용되는 경우 클래스로 분리하라.
+- `namedtuple`, `dataclasses` 모듈들을 사용하여 간단한 클래스를 정의하여 빠르게 적용할 수 있다.
+- 내장 타입을 클래스 내부에 은닉하고, 클래스의 메서드를 사용하여 명확하고 읽기 좋은 코드를 작성할 수 있다.
+
+## Better Way 38. 간단한 인터페이스의 경우 클래스 대신 함수를 받아라 
+### 요약
+- 파이썬의 여러 컴포넌트 사이에 간단한 인터페이스가 필요할 때는 클래스를 정의하고 인스턴스화 하는 대신 간단히 함수를 사용할 수 있다.
+- 파이썬 함수나 메서드는 일급 시민이다. 따라서 (다른 타입의 값과 마찬가지로) 함수나 함수 참조를 식에 사용할 수 있다.
+- `__call__` 특별 메서드를 사용하면 클래스의 인스턴스인 객체를 일반 파이썬 함수처럼 호출할 수 있다.
+- 상태를 유지하기 위한 함수가 필요한 경우에는 상태가 있는 클로저를 정의하는 대신 `__call__` 메서드가 있는 클래스를 정의할 지 고려해보라.
+### 프로토콜
+이전에도 언급된 [PEP-544](https://peps.python.org/pep-0544) 를 참고하면 특히나 도움이 된다.
+- `Protocol` 을 상속하는 클래스를 정의하여 사용하면 타입 힌트와 타입 체커를 모두 만족시킬 수 있다.
+## Better Way 39. 객체를 제너릭하게 구성하려면 `@classmethod`를 통한 다형성을 활용하라
+### 요약
+- 파이썬의 클래스에는 생성자가 `__init__` 메서드 뿐이다.
+- `@classmethod`를 사용하면 클래스에 다른 생성자를 정의할 수 있다.
+- 클래스 메서드 다형성을 활용하면 여러 구체적인 하위 클래스들의 객체를 만들고 연결하는 제너릭한 방법을 제공할 수 있다.
+### 디자인 패턴
+사실상 생성형 디자인 패턴 관련 내용이다. 아래 두 패턴 참고.
+- [팩토리 메서드 패턴](https://refactoring.guru/ko/design-patterns/factory-method)
+- [추상 팩토리 패턴](https://refactoring.guru/ko/design-patterns/abstract-factory)
+
+## Better Way 40. `super` 로 부모 클래스를 초기화하라
+
+### 요약
+- 파이썬은 표준 메서드 결정 순서 (`MRO`)를 활용해 상위 클래스 초기화 순서와 다이아몬드 상속 문제를 해결한다.
+- 부모 클래스를 초기화할 때는 `super` 내장 함수를 아무 인자 없이 호출하라.
+	- `super`를 아무 인자 없이 호출하면 파이썬 컴파일러가 자동으로 올바른 파라미터를 넣어준다.
+
+### 레퍼런스
+- [PEP-3135](https://peps.python.org/pep-3135/) 참고.
+
+## Better Way 41. 기능을 합성할 때는 믹스인 클래스를 사용하라\
+### 요약
+- 믹스인을 사용해 구현할 수 있는 기능을 인스턴스 애트리뷰트와 `__init__`을 사용하는 다중 상속을 통해 구현하지 말라.
+- 믹스인 클래스가 클래스별로 특화된 기능을 필요로 한다면 인스턴스 수준에서 끼워 넣을 수 있는 기능(정해진 메서드를 통해 해당 기능을 인스턴스가 제공하게 만듦)을 활용하라.
+- 믹스인에는 필요에 따라 인스턴스 메서드는 물론 클래스 메서드도 포함될 수 있다.
+
+### 실제 사용 사례
+#### 장고
+
+장고에서 API 뷰를 작성 시 특히나 믹스인을 많이 사용하고 있다.
+
+```python
+"""  
+Basic building blocks for generic class based views.  
+  
+We don't bind behaviour to http method handlers yet,  
+which allows mixin classes to be composed in interesting ways.  
+"""  
+from rest_framework import status  
+from rest_framework.response import Response  
+from rest_framework.settings import api_settings  
+  
+  
+class CreateModelMixin:  
+    """  
+    Create a model instance.    """    def create(self, request, *args, **kwargs):  
+        serializer = self.get_serializer(data=request.data)  
+        serializer.is_valid(raise_exception=True)  
+        self.perform_create(serializer)  
+        headers = self.get_success_headers(serializer.data)  
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)  
+  
+    def perform_create(self, serializer):  
+        serializer.save()  
+  
+    def get_success_headers(self, data):  
+        try:  
+            return {'Location': str(data[api_settings.URL_FIELD_NAME])}  
+        except (TypeError, KeyError):  
+            return {}  
+  
+  
+class ListModelMixin:  
+    """  
+    List a queryset.    """    def list(self, request, *args, **kwargs):  
+        queryset = self.filter_queryset(self.get_queryset())  
+  
+        page = self.paginate_queryset(queryset)  
+        if page is not None:  
+            serializer = self.get_serializer(page, many=True)  
+            return self.get_paginated_response(serializer.data)  
+  
+        serializer = self.get_serializer(queryset, many=True)  
+        return Response(serializer.data)  
+  
+  
+class RetrieveModelMixin:  
+    """  
+    Retrieve a model instance.    """    def retrieve(self, request, *args, **kwargs):  
+        instance = self.get_object()  
+        serializer = self.get_serializer(instance)  
+        return Response(serializer.data)  
+  
+  
+class UpdateModelMixin:  
+    """  
+    Update a model instance.    """    def update(self, request, *args, **kwargs):  
+        partial = kwargs.pop('partial', False)  
+        instance = self.get_object()  
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)  
+        serializer.is_valid(raise_exception=True)  
+        self.perform_update(serializer)  
+  
+        if getattr(instance, '_prefetched_objects_cache', None):  
+            # If 'prefetch_related' has been applied to a queryset, we need to  
+            # forcibly invalidate the prefetch cache on the instance.            instance._prefetched_objects_cache = {}  
+  
+        return Response(serializer.data)  
+  
+    def perform_update(self, serializer):  
+        serializer.save()  
+  
+    def partial_update(self, request, *args, **kwargs):  
+        kwargs['partial'] = True  
+        return self.update(request, *args, **kwargs)  
+  
+  
+class DestroyModelMixin:  
+    """  
+    Destroy a model instance.    """    def destroy(self, request, *args, **kwargs):  
+        instance = self.get_object()  
+        self.perform_destroy(instance)  
+        return Response(status=status.HTTP_204_NO_CONTENT)  
+  
+    def perform_destroy(self, instance):  
+        instance.delete()
+```
+
+위 믹스인을 `ViewSet` 클래스들에 사용하는 공식 코드는 다음과 같다.
+
+```python
+class ViewSet(ViewSetMixin, views.APIView):  
+    """  
+    The base ViewSet class does not provide any actions by default.    """    pass  
+  
+  
+class GenericViewSet(ViewSetMixin, generics.GenericAPIView):  
+    """  
+    The GenericViewSet class does not provide any actions by default,    but does include the base set of generic view behavior, such as    the `get_object` and `get_queryset` methods.    """    pass  
+  
+  
+class ReadOnlyModelViewSet(mixins.RetrieveModelMixin,  
+                           mixins.ListModelMixin,  
+                           GenericViewSet):  
+    """  
+    A viewset that provides default `list()` and `retrieve()` actions.    """    pass  
+  
+  
+class ModelViewSet(mixins.CreateModelMixin,  
+                   mixins.RetrieveModelMixin,  
+                   mixins.UpdateModelMixin,  
+                   mixins.DestroyModelMixin,  
+                   mixins.ListModelMixin,  
+                   GenericViewSet):  
+    """  
+    A viewset that provides default `create()`, `retrieve()`, `update()`,    `partial_update()`, `destroy()` and `list()` actions.    """    pass
+```
+
+## Better Way 42. 비공개 애트리뷰트보다는 공개 애트리뷰트를 사용하라
+
+### 요약
+- 파이썬 컴파일러는 비공개 애트리뷰트를 자식 클래스나 클래스 외부에서 사용하지 못하도록 엄격히 금지하지 않는다.
+- 내부 API에 있는 클래스의 하위 클래스를 정의하는 사람들이 여러분이 제공하는 클래스의 애트리뷰트를 사용하지 못하도록 막기보다는 애트리뷰트를 사용해 더 많은 일을 할 수 있게 허용하라.
+- 비공개 애트리뷰트로 (외부나 하위 클래스의) 접근을 막으려고 시도하기보다는 보호된 필드를 사용하면서 문서에 적절한 가이드를 남겨라.
+
+### 린터
+- [SLF001](https://docs.astral.sh/ruff/rules/private-member-access/) 참고.
+
+### 개인적인 의견
+- 그럼에도 불구하고, 경우에 따라서 외부에 노출하거나 상속을 허용하는 것이 아무런 이득이 없는 경우에는 언더바를 사용하는 것이 개인적으로는 더 좋다고 생각한다. 개인적인 근거는:
+	- 파이썬의 네이밍 규칙을 이해하고 있다면, 클래스나 메서드, 필드 근처에 있는 docstring 을 읽는 것보다 훨씬 이해하기 쉽다
+		- 누가 봐도 "건들면 문제 생길 법한 필드" 지 않는가
+
+## Better Way 43. 커스텀 컨테이너 타입은 collections.abc를 상속하라
+### 요약
+- 간편하게 사용할 경우에는 파이썬 컨테이너 타입(리스트나 딕셔너리 등)을 직접 상속하라.
+- 커스텀 컨테이너를 제대로 구현하려면 수많은 메서드를 구현해야 한다는 점에 주의하라.
+- 커스텀 컨테이너 타입이 `collections.abc` 에 정의된 인터페이스를 상속하면 커스텀 컨테이너 타입이 정상적으로 작동하기 위해 필요한 인터페이스와 기능을 제대로 구현하도록 보장할 수 있다.
+
+파이썬은 워낙 이미 구현되어 있는 클래스들이 많아서 굳이 맨 땅에서 시작해야 하나 싶긴 함.
+
+## Better Way 44. 세터와 게터 메서드 대신 평범한 애트리뷰트를 사용하라
+
+### 요약
+- 새로운 클래스 인터페이스를 정의할 때는 간단한 공개 애트리뷰트에서 시작하고, 세터나 게터 메서드를 가급적 사용하지 말라.
+- 객체에 있는 애트리뷰트에 접근할 때 특별한 동작이 필요하면 @property로 이를 구현할 수 있다.
+- `@property` 메서드를 만들 때는 최소 놀람의 법칙을 따르고 이상한 부작용을 만들어내지 말라.
+- `@property` 메서드가 빠르게 실행되도록 유지하라. 느리거나 복잡한 작업의 경우 (특히 I/O를 수행하는 등의 부수 효과가 있는 경우)에는 프로퍼티 대신 일반적인 메서드를 사용하라.
+
+### 잡기술
+
+보통 `Mixin` 패턴과 혼용하면 유용하게 사용할 수 있다.
+
+```python
+from typing import TypeVar, Protocol
+
+class HasName(Protocol):
+    first_name: str
+    last_name: str
+
+class NameMixin:
+    @property
+    def full_name(self: HasName) -> str:
+        return f"{self.first_name} {self.last_name}"
+
+class Person(NameMixin):
+    def __init__(self, first_name: str, last_name: str):
+        self.first_name = first_name
+        self.last_name = last_name
+
+person = Person("John", "Doe")
+print(person.full_name)
+
+```
+
+## Better Way 45. 애트리뷰트를 리팩터링하는 대신 `@property` 를 사용하라
+
+### 요약
+- `@property`를 사용해 기존 인스턴스 애트리뷰트에 새로운 기능을 제공할 수 있다.
+- `@property`를 사용해 데이터 모델을 점진적으로 개선하라.
+- `@property` 메서드를 너무 과하게 쓰고 있다면, 클래스와 클래스를 사용하는 모든 코드를 리팩토링하는 것을 고려하라.
+
+같은 내용 반복적이라 생략함.
+
+## Better Way 46. 재사용 가능한 `@property` 메서드를 만들려면 디스크립터를 사용하라
+
+### 요약
+- @property 메서드의 동작과 검증 기능을 재사용하고 싶다면 디스크립터 클래스를 만들라.
+- 디스크립터 클래스를 만들 때는 메모리 누수를 방지하기 위해 `WeakKeyDictionary`를 사용하라.
+- `__getattribute__` 가 디스크립터 프로토콜을 사용해 애트리뷰트 값을 읽거나 설정하는 방식을 정확히 이해하라.
+
+### 개인적인 의견
+- 굳이 디스크립터 객체를 만들어서 협업을 힘들게 할 이유가 있을까? 그것도 약한 참조까지 써가면서...
+	- 평범한 비동기 코드조차 진입 장벽이 있는 판에 굳이 이렇게 작성해야 하는지는 좀 의문
+
+## Better Way 47. 지연 계산 애트리뷰트가 필요하면 `__getattr__`, `__getattribute__`, `__setattr__` 을 사용하라
+### 요약
+- `__getattr__`과 `__setattr__` 을 사용해 객체의 애트리뷰트를 지연해 가져오거나 저장할 수 있다.
+- `__getattr__`은 애트리뷰트가 존재하지 않을 때만 호출되지만, `__getattribute__` 는 애트리뷰트를 읽을 때마다 항상 호출된다는 점을 이해하라.
+- `__getattribute__`와 `__setattr__` 에서 무한 재귀를 피하려면 `super()` 에 있는 (즉, object 클래스에 있는) 메서드를 사용해 인스턴스 애트리뷰트에 접근하라.
+
+### 조금 풀어서 쓴 설명
+- [stackoverflow 글](https://stackoverflow.com/questions/3278077/difference-between-getattr-and-getattribute) 참고.
+	- 객체의 어트리뷰트 접근 시 `__getattr__` 또는 `__getattribute__` 사용하여 값을 찾음
+	- `__getattribute__`, `__setattr__` 는 어트리뷰트 값 접근 / 수정 시 무조건 호출
+	- `__getattr__`  호출 시 객체 내부에 있는 `__dict__` 에서 값을 찾음 (캐싱 개념)
+		- `__getattribute__` 와는 다르게 `__dict__` 를 먼저 찾아봄
+		- 있으면 꺼내서 바로 반환
+		- 없으면 내부 로직 수행함
+
+## Better Way 48, 49, 50, 51
+- 생략, 이 부분들은 오히려 안티 패턴으로 취급해야 한다고 생각함
+## Better Way 52. 자식 프로세스를 관리하기 위해 `subprocess`를 사용하라
+### 요약
+- 파이썬은 `GIL` 구조로 인해 하나의 CPU 코어에 묶여있지만, 하위 프로세스를 사용하면 여러 CPU를 동시에 조작할 수 있다.
+- `subprocess` 모듈을 사용해 자식 프로세스를 실행하고 입력과 출력 스트림을 관리할 수 있다.
+- 간단하게 자식 프로세스를 실행하고 싶은 경우에는 `run` 편의 함수를 사용하라. 유닉스 스타일의 파이프라인이 필요하면 `Popen` 클래스를 사용하라.
+- `communicate` 메서드에 `timeout` 파라미터를 지정하여 자식 프로세스가 멈추거나 교착 상태가 발생하는 상황을 방지할 수 있다.
+
+### 참고 사항
+- `asyncio` 등을 사용한 "동시성" 프로그래밍 환경에서는 서브 프로세스 방식이 대부분 블로킹 방식으로 처리되므로, 이벤트 루프를 차단할 수 있다.
+	- [create-subprocess-in-async-function (ASYNC220) - Ruff (astral.sh)](https://docs.astral.sh/ruff/rules/create-subprocess-in-async-function/#create-subprocess-in-async-function-async220) 참고.
+- 동시성과 병렬성은 상당히 다른 개념이며, 네트워크 IO 최적화가 필요한 상황이라면 멀티 프로세싱보다는 `asyncio` 기반의 동시성으로 처리하는 것이 좋다.
+	- 동시성과 병렬성의 차이에 대해 이해하기 어렵다면 [language agnostic - What is the difference between concurrency and parallelism? - Stack Overflow](https://stackoverflow.com/questions/1050222/what-is-the-difference-between-concurrency-and-parallelism) 링크 참고.
+
+## Better Way 53. 블로킹 I/O의 경우 스레드를 사용하고 병렬성을 피하라.
+### 요약
+- `CPython` 은 전역 인터프리터 락(`Global Interpreter Lock, GIL`)이라는 방법을 사용하여 상태 일관성을 강제로 유지한다.
+	- `GIL`은 상호 배제 락 (뮤텍스(`mutex`))이며, 스레드 인터럽트가 함부로 발생하는 것을 방지하여 인터프리터 상태가 제대로 유지되도록 한다.
+	- `GIL`은 멀티 스레드를 지원하나 `GIL` 로 인해 하나의 스레드만 실행될 수 있다. 따라서 멀티 스레딩을 사용시 병렬 처리가 제대로 수행되지 않는다.
+- 블로킹 I/O 처리 시 멀티 스레딩을 사용하더라도 CPU 바운드 I/O 가 아닌 네트워크 바운드 I/O 이므로 성능 개선이 가능하다.
+
+## Better Way 54. 스레드에서 데이터 경합을 위해 `Lock`을 사용하라
+### 요약
+- `GIL`은 경합 조건을 방지해주지 않는다.
+- `GIL`은 시분할 방식으로 작동하므로, 언제 프로그램이 인터럽트 될 지 알 수 없다.
+- 간단한 단일 명령어로 보이는 작업도 실제로는 여러 단계의 명령어로 나뉠 수 있다.
+- 따라서 프로그램 내에서 불변 조건을 유지해야 하는 중요 로직이라면 `Lock`을 사용하여 경합 조건을 방지해야 한다.
+
+### 더 나아가서
+- `Lock` 사용 시 상당히 번거롭다.
+	- 잠금 대기 관련 로직을 직접 제어해야 한다.
+	- `RLock` 객체 사용 시, 타 언어에서 사용하는 `ReentrantLock`을 그대로 사용할 수 있다.
+		- `synchronized`를 `ReentrantLock` 으로 대체하려는 시도가 자바에서 많다. 
+			- [pgjdbc issue#1951]([Loom compatible - replace synchronized block with for example j.u.c.ReentrantLock · Issue #1951 · pgjdbc/pgjdbc · GitHub](https://github.com/pgjdbc/pgjdbc/issues/1951)) 참고.
+	- `Condition` 객체 사용 시 `Lock`의 기능을 그대로 사용하면서도, 여러 클래스의 Producer / Consumer 로직을 단순화 할 수 있다.
+		- [Condition 객체]([threading — Thread-based parallelism — Python 3.12.4 documentation](https://docs.python.org/3/library/threading.html#condition-objects)) 참고.
+- `Semaphore` 사용 또한 병행되어야 한다.
+	- 단순 `Lock` 클래스만으로는 동시성 / 병행성을 세밀하게 제어할 수 없다.
+## Better Way 55. `Queue`를 사용해 스레드 사이의 작업을 조율하라
+### 요약
+- 순차적인 작업을 동시에 여러 파이썬 스레드에서 실행되도록 조직하고 싶을 때, 특히 I/O 위주의 프로그램인 경우라면 파이프라인이 매우 유용하다.
+- 동시성 파이프라인을 만들 때 발생할 수 있는 여러가지 문제(바쁜 대기, 작업자에게 종료를 알리는 방법, 잠재적인 메모리 사용량 폭발 등)를 잘 알아두라.
+- Queue 클래스는 튼튼한 파이프라인을 구축할 때 필요한 기능인 블로킹 연산, 버퍼 크기 지정, join을 통한 완료 대기를 모두 제공한다.
+
+### 더 나아가서
+- 프로그램이 고도화 되어야 하면 Producer / Consumer 구조 적용은 필수적이다.
+	- 다른 패턴들이 있더라도 이 패턴만큼 보편적이거나 구현하기는 쉽지 않다.
+	- 비동기 환경이라고 해도 이는 필수적이다.
+		- 비동기 환경에서 특정한 작업(Task)를 예약하는 작업 자체가 `asyncio`의 `Task`, `Future`에 의존해야 하는데, 이 객체들은 상당히 관리하기가 까다롭다.
+		- 어느 정도 asyncio 기반 생태계가 구성 되어야 수월하게 개발할 수 있다. 또는 생태계에 대한 이해를 하고 있어야 한다.
+		- 코루틴이나 비동기 Task 자체가 Producer/Consumer 패턴에 비해 메모리 비용이 저렴하지는 않다.
+			- `asyncio.gather` 또는 `TaskGroup` 등을 사용하면 모든 Task 가 종료될 때까지 메모리를 홀딩하는 문제가 있다. 
+
+## Better Way 56. 언제 동시성이 필요할지 인식하는 방법을 알아두라
+
+### 요약
+- 프로그램이 커지면서 범위와 복잡도가 증가함에 따라 동시에 실행되는 여러 실행 흐름이 필요해지는 경우가 많다.
+- 동시성을 조율하는 가장 일반적인 방법으로는 팬아웃(새로운 동시성 단위들을 만들어냄)과 팬인(기존 동시성 단위들의 실행이 끝나기를 기다림)이 있다.
+- 파이썬은 팬아웃과 팬인을 구현하는 다양한 방법을 제공한다.
+
+### 더 나아가서
+- 팬아웃이 가능한 지점이 Bound 작업이라는 점이 중요하다.
+- 실제로 중요한 것은 CPU Bound 와 I/O Bound 를 구분하는 것이다.\
+	- [잘 정리된 글](https://realpython.com/python-concurrency/)이 있으니 참고.
+- CPU Bound 작업의 경우 CPU 코어를 늘리는 방법으로 확장할 수 있다.
+	- 자원 효율적인 방법 순으로 정리하면 다음과 같다.
+		- Thread
+		- Process (or Subprocess)
+	- 하지만 Python은 `GIL`로 인해 Thread 를 사용 시 CPU Bound 작업에서는 이점을 얻을 수 없다.
+		- 따라서 CPU Bound 처리 시, 멀티 프로세싱이 강요된다.
+- I/O Bound 작업의 경우 이점이 명확하다.
+	-  `GIL`의 존재에도 불구하고 Thread 를 사용하여 I/O 작업을 팬아웃 할 수 있다.
+		- I/O 작업은 CPU 사용량이 많은 작업이 아니기 때문에 이를 Thread 처리하더라도 성능 상의 손실이 적다.
+	- 자원 효율적인 방법 순으로 정리하면 다음과 같다.
+		- Coroutine
+		- Thread
+		- Process
+
+## Better Way 57. 요구에 따라 팬아웃을 진행하려면 새로운 스레드를 생성하지 말라
+### 요약
+- 스레드에는 많은 단점이 있다. 스레드를 시작하고 실행하는 데 비용이 들기 때문에 스레드가 많이 필요하면 상당히 많은 메모리를 사용한다. 그리고 스레드 사이를 조율하기 위해 Lock과 같은 특별한 도구를 사용해야 한다.
+- 스레드를 시작하거나 스레드가 종료하기를 기다리는 코드에게 스레드 실행 중에 발생한 예외를 돌려주는 파이썬 내장 기능은 없다. 이로 인해 스레드 디버깅이 더 어려워진다.
+### 더 나아가서
+- 제발 [concurrent.futures — Launching parallel tasks — Python 3.12.4 문서](https://docs.python.org/ko/3/library/concurrent.futures.html) 를 사용하자.
+
+## Better Way 58. 동시성과 Queue를 사용하기 위해 코드를 어떻게 리팩터링해야 하는지 이해하라
+### 요약
+- 작업자 스레드 수를 고정하고 Queue와 함께 사용하면 스레드를 사용할 때 팬인과 팬아웃의 규모 확장성을 개선할 수 있다.
+- Queue를 사용하도록 기존 코드를 리팩터링하려면 상당히 많은 작업이 필요하다. 특히 다단계로 이뤄진 파이프라인이 필요하면 작업량이 더 늘어난다.
+- 다른 파이썬 내장 기능이나 모듈이 제공하는 병렬 I/O를 가능하게 해주는 다른 기능과 비교하면, Queue는 프로그램이 활용할 수 있는 전체 I/O 병렬성의 정도를 제한한다는 단점이 있다.
+
+### 개인적인 의견
+- 책에서 나오는 코드 예시 가독성 끔찍하다...
+	- 앞에서 나오는 Better Way 들 본인부터 지키는게..
+- Producer / Consumer 구조에 가깝게 코드를 유지만 하면 코드 리팩터링에 대한 고민은 별로 없어짐
+	- 책에서 제시하는 예시가 별로 와 닿지 않는 건 그냥 dataclass도 안 쓰고, 타입 힌트도 안 쓰고, 구조도 함수로 떡칠했기 때문임
+	- 팬아웃 / 팬인 되는 입출구만 잘 관리해도 별 다른 문제는 없다
+
+## Better Way 59. 동시성을 위해 스레드가 필요한 경우에는 `ThreadPoolExecutor`를 사용하라
+### 요약
+- `ThreadPoolExecutor`를 사용하면 한정된 리팩터링만으로 간단한 I/O 병렬성을 활성화할 수 있고, 동시성을 팬아웃해야 하는 경우에 발생하는 스레드 시작 비용을 쉽게 줄일 수 있다.
+- `ThreadPoolExecutor`를 사용하면 스레드를 직접 사용할 때 발생할 수 있는 잠재적인 메모리 낭비 문제를 없애주지만, `max_workers`의 개수를 미리 지정해야 하므로 I/O 병렬성을 제한한다.
+
+## Better Way 60. I/O를 할 때는 코루틴을 사용해 동시성을 높여라
+### 요약
+- async 키워드로 정의한 함수를 코루틴이라고 부른다. 코루틴을 호출하는 호출자는 await 키워드를 사용해 자신이 의존하는 코루틴의 결과를 받을 수 있다.
+- 코루틴은 수만 개의 함수가 동시에 실행되는 것처럼 보이게 만드는 효과적인 방법을 제공한다.
+- I/O를 병렬화하면서 스레드로 I/O를 수행할 때 발생할 수 있는 문제를 극복하기 위해 팬인과 팬아웃에 코루틴을 사용할 수 있다.
+### 더 나아가서
+- [[#[PEP-342](https //peps.python.org/pep-0342)]] 내용 참고.
+	- 즉, `asyncio.Coroutine`은 실제로는 제너레이터로 구현되어 있다.
+- 코루틴 개념에 대해서는 [코루틴(Coroutine)에 대하여 (gmarket.com)](https://dev.gmarket.com/82)글을 참고하면 도움이 될 듯 하다.
+- python `asyncio` 내에서 활용하기 위해서는 [코루틴과 태스크 — Python 3.12.4 문서](https://docs.python.org/ko/3/library/asyncio-task.html#coroutines) 를 참고하는 것이 좋다.
+- 아래 PDF도 읽어보는 것을 추천
+
+![[./cheat-sheet-for-python-asyncio.pdf]]
